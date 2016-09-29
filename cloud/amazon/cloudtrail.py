@@ -53,28 +53,9 @@ options:
     default: false
     choices: ["true", "false"]
 
-  aws_secret_key:
-    description:
-      - AWS secret key. If not set then the value of the AWS_SECRET_KEY environment variable is used.
-    required: false
-    default: null
-    aliases: [ 'ec2_secret_key', 'secret_key' ]
-    version_added: "1.5"
-  aws_access_key:
-    description:
-      - AWS access key. If not set then the value of the AWS_ACCESS_KEY environment variable is used.
-    required: false
-    default: null
-    aliases: [ 'ec2_access_key', 'access_key' ]
-    version_added: "1.5"
-  region:
-    description:
-      - The AWS region to use. If not specified then the value of the EC2_REGION environment variable, if any, is used.
-    required: false
-    aliases: ['aws_region', 'ec2_region']
-    version_added: "1.5"
-
-extends_documentation_fragment: aws
+extends_documentation_fragment:
+  - aws
+  - ec2
 """
 
 EXAMPLES = """
@@ -165,9 +146,7 @@ def main():
     if not HAS_BOTO:
       module.fail_json(msg='boto is required.')
 
-    ec2_url, access_key, secret_key, region = get_ec2_creds(module)
-    aws_connect_params = dict(aws_access_key_id=access_key,
-                              aws_secret_access_key=secret_key)
+    region, ec2_url, aws_connect_params = get_aws_connection_info(module)
 
     if not region:
         module.fail_json(msg="Region must be specified as a parameter, in EC2_REGION or AWS_REGION environment variables or in boto configuration file")
