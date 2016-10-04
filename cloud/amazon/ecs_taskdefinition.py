@@ -44,7 +44,7 @@ options:
         type: int
     containers:
         description:
-            - A list of containers definitions 
+            - A list of containers definitions
         required: False
         type: list of dicts with container definitions
     volumes:
@@ -52,6 +52,10 @@ options:
             - A list of names of volumes to be attached
         required: False
         type: list of name
+    task_role:
+        description:
+            - The Amazon Resource Name (ARN) of the IAM role that containers in this task can assume
+        version_added: "2.3"
 extends_documentation_fragment:
     - aws
     - ec2
@@ -88,6 +92,7 @@ EXAMPLES = '''
     - name: my-vol
     family: test-cluster-taskdef
     state: present
+    task_role: arn:...
   register: task_output
 '''
 RETURN = '''
@@ -108,8 +113,9 @@ try:
 except ImportError:
     HAS_BOTO3 = False
 
+
 class EcsTaskManager:
-    """Handles ECS Tasks"""
+    '''Handles ECS Tasks'''
 
     def __init__(self, module):
         self.module = module
@@ -117,10 +123,10 @@ class EcsTaskManager:
         try:
             region, ec2_url, aws_connect_kwargs = get_aws_connection_info(module, boto3=True)
             if not region:
-                module.fail_json(msg="Region must be specified as a parameter, in EC2_REGION or AWS_REGION environment variables or in boto configuration file")
+                module.fail_json(msg='Region must be specified as a parameter, in EC2_REGION or AWS_REGION environment variables or in boto configuration file')
             self.ecs = boto3_conn(module, conn_type='client', resource='ecs', region=region, endpoint=ec2_url, **aws_connect_kwargs)
         except boto.exception.NoAuthHandlerFound, e:
-            module.fail_json(msg="Can't authorize connection - "+str(e))
+            module.fail_json(msg='Cannot authorize connection - '+str(e))
 
     def describe_task(self, task_name):
         try:
@@ -129,9 +135,8 @@ class EcsTaskManager:
         except botocore.exceptions.ClientError:
             return None
 
-    def register_task(self, family, container_definitions, volumes):
-        response = self.ecs.register_task_definition(family=family,
-            containerDefinitions=container_definitions, volumes=volumes)
+    def register_task(self, task_arguments):
+        response = self.ecs.register_task_definition(**task_arguments)
         return response['taskDefinition']
 
     def deregister_task(self, taskArn):
@@ -142,12 +147,13 @@ def main():
 
     argument_spec = ec2_argument_spec()
     argument_spec.update(dict(
-        state=dict(required=True, choices=['present', 'absent'] ),
-        arn=dict(required=False, type='str' ),
-        family=dict(required=False, type='str' ),
+        state=dict(required=True, choices=['present', 'absent']),
+        arn=dict(required=False, type='str'),
+        family=dict(required=False, type='str'),
         revision=dict(required=False, type='int' ),
-        containers=dict(required=False, type='list' ),
-        volumes=dict(required=False, type='list' )
+        containers=dict(required=False, type='list'),
+        volumes=dict(required=False, type='list' ),
+        task_role=(dict(required=False, type='str')),
     ))
 
     module = AnsibleModule(argument_spec=argument_spec, supports_check_mode=True)
@@ -159,30 +165,33 @@ def main():
       module.fail_json(msg='boto3 is required.')
 
     task_to_describe = None
+
     # When deregistering a task, we can specify the ARN OR
     # the family and revision.
     if module.params['state'] == 'absent':
         if 'arn' in module.params and module.params['arn'] is not None:
             task_to_describe = module.params['arn']
         elif 'family' in module.params and module.params['family'] is not None and 'revision' in module.params and module.params['revision'] is not None:
-            task_to_describe = module.params['family']+":"+str(module.params['revision'])
+            task_to_describe = module.params['family']+':'+str(module.params['revision'])
         else:
-            module.fail_json(msg="To use task definitions, an arn or family and revision must be specified")
+            module.fail_json(msg='To use task definitions, an arn or family and revision must be specified')
     # When registering a task, we can specify the ARN OR
     # the family and revision.
     if module.params['state'] == 'present':
         if not 'family' in module.params:
-            module.fail_json(msg="To use task definitions, a family must be specified")
+            module.fail_json(msg='To use task definitions, a family must be specified')
         if not 'containers' in module.params:
-            module.fail_json(msg="To use task definitions, a list of containers must be specified")
+            module.fail_json(msg='To use task definitions, a list of containers must be specified')
         task_to_describe = module.params['family']
+        if module.params['revision']:
+            task_to_describe = '%s:%d' % (task_to_describe, module.params['revision'])
 
     task_mgr = EcsTaskManager(module)
     existing = task_mgr.describe_task(task_to_describe)
 
     results = dict(changed=False)
     if module.params['state'] == 'present':
-        if existing and 'status' in existing and existing['status']=="ACTIVE":
+        if existing and 'status' in existing and existing['status']=='ACTIVE':
             results['taskdefinition']=existing
         else:
             if not module.check_mode:
@@ -192,11 +201,16 @@ def main():
                     volumes = module.params['volumes']
                 if volumes is None:
                     volumes = []
-                results['taskdefinition'] = task_mgr.register_task(module.params['family'],
-                    module.params['containers'], volumes)
+
+                task_kwargs = {'family': module.params['family'],
+                               'containerDefinitions': module.params['containers'],
+                               'volumes': volumes,
+                               'taskRoleArn': module.params['task_role'],
+                               }
+                results['taskdefinition'] = task_mgr.register_task(task_kwargs)
             results['changed'] = True
 
-    # delete the cloudtrai
+    # delete the task definition
     elif module.params['state'] == 'absent':
         if not existing:
             pass
@@ -204,7 +218,7 @@ def main():
             # it exists, so we should delete it and mark changed.
             # return info about the cluster deleted
             results['taskdefinition'] = existing
-            if 'status' in existing and existing['status']=="INACTIVE":
+            if 'status' in existing and existing['status'] == 'INACTIVE':
                 results['changed'] = False
             else:
                 if not module.check_mode:
